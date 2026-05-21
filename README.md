@@ -34,3 +34,12 @@ AI-powered application that converts YouTube videos or uploaded videos into stru
 
 ```bash
 pip install -r requirements.txt
+```
+
+## Run
+
+```bash
+streamlit run app.py
+```
+
+
