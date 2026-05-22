@@ -10,18 +10,19 @@ from transformers import pipeline
 
 # ---------------- UI ----------------
 
-st.title("🎥 Video Note Extractor")
+st.title("🎥 AI Video Note Extractor")
+
 st.write(
-    "Upload a video OR paste a YouTube link to generate notes and download them as PDF."
+    "Upload a video or paste a YouTube link to generate notes and download them as PDF."
 )
 
 uploaded_file = st.file_uploader(
-    "Upload a video file",
+    "Upload Video",
     type=["mp4", "mov", "avi"]
 )
 
 youtube_link = st.text_input(
-    "Or paste a YouTube video link"
+    "Paste YouTube Video URL"
 )
 
 video_path = None
@@ -60,12 +61,14 @@ def create_pdf(transcript, notes, revision):
 
     pdf.cell(200, 10, "Video Notes", ln=True)
 
-    pdf.cell(200, 10, "Transcript:", ln=True)
+    pdf.cell(200, 10, "Transcript", ln=True)
+
     pdf.multi_cell(0, 10, transcript)
 
-    pdf.cell(200, 10, "Detailed Notes:", ln=True)
+    pdf.cell(200, 10, "Detailed Notes", ln=True)
 
     for note in notes:
+
         note = note.encode(
             "latin-1",
             "replace"
@@ -73,9 +76,10 @@ def create_pdf(transcript, notes, revision):
 
         pdf.multi_cell(0, 10, note)
 
-    pdf.cell(200, 10, "Quick Revision:", ln=True)
+    pdf.cell(200, 10, "Quick Revision", ln=True)
 
     for point in revision:
+
         point = point.encode(
             "latin-1",
             "replace"
@@ -113,140 +117,195 @@ if uploaded_file is not None:
 
     video_path = "input_video.mp4"
 
-    st.success("Video uploaded successfully!")
+    st.success("Video uploaded successfully")
 
 elif youtube_link:
 
-    st.write("Downloading video from YouTube...")
+    st.write("Downloading YouTube video...")
 
-    video_path = download_youtube_video(youtube_link)
+    try:
 
-    st.success("YouTube video downloaded!")
+        video_path = download_youtube_video(
+            youtube_link
+        )
+
+        st.success(
+            "YouTube video downloaded successfully"
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"YouTube download failed: {e}"
+        )
 
 
 # ---------------- PROCESS VIDEO ----------------
 
 if video_path:
 
-    st.write("Video Path:", video_path)
+    try:
 
-    video = VideoFileClip(video_path)
+        st.write(
+            f"Processing: {video_path}"
+        )
 
-    if video.audio is not None:
+        video = VideoFileClip(video_path)
 
-        # Delete old audio file
-        if os.path.exists("audio.mp3"):
-            os.remove("audio.mp3")
+        if video.audio is None:
 
-        video.audio.write_audiofile("audio.mp3")
+            st.error(
+                "Video does not contain audio"
+            )
 
-        st.success("Audio extracted successfully!")
+        else:
 
-        if os.path.exists("audio.mp3"):
+            if os.path.exists("audio.mp3"):
+                os.remove("audio.mp3")
 
-            st.write("Transcribing audio...")
-            st.write("Starting Whisper...")
+            video.audio.write_audiofile(
+                "audio.mp3"
+            )
+
+            st.success(
+                "Audio extracted successfully"
+            )
+
+            st.write(
+                "Transcribing using Whisper..."
+            )
 
             result = whisper_model.transcribe(
                 "audio.mp3",
                 fp16=False
             )
 
-            st.write("Whisper Finished")
-
             transcript = result["text"]
 
-            st.write("Transcript extracted")
+            if len(transcript.strip()) == 0:
 
-            st.success("Transcription completed!")
-
-            # ---------------- DEBUG INFO ----------------
-
-            st.write("### Debug Information")
-
-            st.write("Transcript Length:", len(transcript))
-
-            st.write("Transcript Preview:")
-
-            st.write(transcript[:300])
-
-            # ---------------- TRANSCRIPT ----------------
-
-            st.write("### Transcript")
-
-            st.write(transcript)
-
-            # ---------------- AI SUMMARY ----------------
-
-            st.write("Generating AI notes...")
-            st.write("Starting BART summarization...")
-
-            short_transcript = transcript[:5000]
-
-            summary = summarizer(
-                short_transcript,
-                max_length=150,
-                min_length=50,
-                do_sample=False
-            )
-
-            st.write("BART summarization finished")
-
-            summarized_text = summary[0]["summary_text"]
-
-            # ---------------- NOTES ----------------
-
-            sentences = summarized_text.replace(
-                "\n",
-                "."
-            ).split(".")
-
-            notes_list = []
-
-            for sentence in sentences:
-
-                sentence = sentence.strip()
-
-                if len(sentence) > 20:
-                    notes_list.append("- " + sentence)
-
-            st.success("Notes generated!")
-
-            st.write("### Detailed Notes")
-
-            for note in notes_list:
-                st.write(note)
-
-            # ---------------- QUICK REVISION ----------------
-
-            revision_points = notes_list[:6]
-
-            st.write("### Quick Revision Points")
-
-            for point in revision_points:
-                st.write(point)
-
-            # ---------------- PDF ----------------
-
-            create_pdf(
-                transcript,
-                notes_list,
-                revision_points
-            )
-
-            with open("notes.pdf", "rb") as file:
-
-                st.download_button(
-                    label="📥 Download Notes as PDF",
-                    data=file,
-                    file_name="video_notes.pdf",
-                    mime="application/pdf"
+                st.error(
+                    "Transcript is empty"
                 )
 
-        else:
+            else:
 
-            st.error("Audio extraction failed.")
+                st.success(
+                    "Transcription completed"
+                )
 
-    else:
+                st.write(
+                    "### Transcript Preview"
+                )
 
-        st.error("This video has no audio track.")
+                st.write(
+                    transcript[:500]
+                )
+
+                st.write(
+                    f"Transcript Length: {len(transcript)}"
+                )
+
+                # ---------------- SAFE SUMMARY INPUT ----------------
+
+                MAX_CHARS = 1800
+
+                if len(transcript) > MAX_CHARS:
+
+                    short_transcript = transcript[
+                        :MAX_CHARS
+                    ]
+
+                else:
+
+                    short_transcript = transcript
+
+                st.write(
+                    "Generating AI Notes..."
+                )
+
+                summary = summarizer(
+                    short_transcript,
+                    max_length=150,
+                    min_length=50,
+                    do_sample=False
+                )
+
+                summarized_text = summary[
+                    0
+                ][
+                    "summary_text"
+                ]
+
+                # ---------------- NOTES ----------------
+
+                sentences = summarized_text.replace(
+                    "\n",
+                    "."
+                ).split(".")
+
+                notes_list = []
+
+                for sentence in sentences:
+
+                    sentence = sentence.strip()
+
+                    if len(sentence) > 15:
+
+                        notes_list.append(
+                            "- " + sentence
+                        )
+
+                if len(notes_list) == 0:
+
+                    notes_list.append(
+                        "- Summary generation completed."
+                    )
+
+                st.success(
+                    "Notes generated successfully"
+                )
+
+                st.write(
+                    "### Detailed Notes"
+                )
+
+                for note in notes_list:
+
+                    st.write(note)
+
+                revision_points = notes_list[:6]
+
+                st.write(
+                    "### Quick Revision"
+                )
+
+                for point in revision_points:
+
+                    st.write(point)
+
+                # ---------------- PDF ----------------
+
+                create_pdf(
+                    transcript,
+                    notes_list,
+                    revision_points
+                )
+
+                with open(
+                    "notes.pdf",
+                    "rb"
+                ) as file:
+
+                    st.download_button(
+                        label="📥 Download PDF",
+                        data=file,
+                        file_name="video_notes.pdf",
+                        mime="application/pdf"
+                    )
+
+    except Exception as e:
+
+        st.error(
+            f"Processing failed: {e}"
+        )
