@@ -108,6 +108,94 @@ def load_models():
 whisper_model, summarizer = load_models()
 
 
+# ---------------- CHUNKED SUMMARIZATION ----------------
+
+def chunk_and_summarize(transcript, summarizer, chunk_size=1800, overlap=100):
+    """
+    Splits a long transcript into overlapping chunks,
+    summarizes each chunk separately, then returns
+    ALL chunk summaries joined together.
+
+    KEY FIX: We do NOT do a final truncation pass.
+    Instead, we return all chunk summaries joined so
+    that EVERY part of the video appears in the notes.
+
+    Args:
+        transcript  : full text string (any length)
+        summarizer  : loaded HuggingFace pipeline
+        chunk_size  : max characters per chunk (safe limit for DistilBART)
+        overlap     : characters shared between consecutive chunks
+                      (preserves sentence context at boundaries)
+
+    Returns:
+        summarized_text : all chunk summaries joined (covers full video)
+    """
+
+    # ── SHORT TRANSCRIPT: no chunking needed ──
+    if len(transcript) <= chunk_size:
+        result = summarizer(
+            transcript,
+            max_length=150,
+            min_length=50,
+            do_sample=False
+        )
+        return result[0]["summary_text"]
+
+    # ── LONG TRANSCRIPT: split into chunks ──
+
+    # STEP 1 — Build chunks with overlap
+    chunks = []
+    start = 0
+
+    while start < len(transcript):
+        end = start + chunk_size
+        chunk = transcript[start:end]
+        chunks.append(chunk)
+        # Move forward by chunk_size MINUS overlap
+        # so next chunk starts slightly before this one ended
+        # This prevents sentences from being cut at boundaries
+        start += (chunk_size - overlap)
+
+    total_chunks = len(chunks)
+
+    st.write(f"📄 Long transcript detected — {len(transcript)} characters")
+    st.write(f"🔀 Splitting into {total_chunks} parts for complete summarization...")
+
+    # STEP 2 — Summarize each chunk individually
+    chunk_summaries = []
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for i, chunk in enumerate(chunks):
+
+        status_text.write(
+            f"⏳ Summarizing part {i + 1} of {total_chunks}..."
+        )
+
+        result = summarizer(
+            chunk,
+            max_length=120,
+            min_length=30,
+            do_sample=False
+        )
+
+        chunk_summaries.append(result[0]["summary_text"])
+
+        # Update progress bar (value must be between 0.0 and 1.0)
+        progress_bar.progress((i + 1) / total_chunks)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    # STEP 3 — Join ALL chunk summaries with a period separator
+    # No truncation here — every chunk's summary is kept
+    # This ensures the full video is represented in the notes
+    combined_summary = ". ".join(chunk_summaries)
+
+    return combined_summary
+
+
 # ---------------- HANDLE INPUT ----------------
 
 if uploaded_file is not None:
@@ -203,39 +291,16 @@ if video_path:
                 )
 
                 st.write(
-                    f"Transcript Length: {len(transcript)}"
+                    f"Transcript Length: {len(transcript)} characters"
                 )
 
-                # ---------------- SAFE SUMMARY INPUT ----------------
+                # ── CHUNKED SUMMARIZATION (handles any length) ──
+                st.write("Generating AI Notes...")
 
-                MAX_CHARS = 1800
-
-                if len(transcript) > MAX_CHARS:
-
-                    short_transcript = transcript[
-                        :MAX_CHARS
-                    ]
-
-                else:
-
-                    short_transcript = transcript
-
-                st.write(
-                    "Generating AI Notes..."
+                summarized_text = chunk_and_summarize(
+                    transcript,
+                    summarizer
                 )
-
-                summary = summarizer(
-                    short_transcript,
-                    max_length=150,
-                    min_length=50,
-                    do_sample=False
-                )
-
-                summarized_text = summary[
-                    0
-                ][
-                    "summary_text"
-                ]
 
                 # ---------------- NOTES ----------------
 
