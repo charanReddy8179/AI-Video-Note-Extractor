@@ -3,8 +3,9 @@ openai-whisper
 moviepy
 yt-dlp
 fpdf2
-transformers>=4.46.0
+transformers==4.41.2
+tokenizers==0.19.1
 torch
+torchvision
 sentencepiece
 accelerate
-torchvision
