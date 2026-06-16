@@ -5,6 +5,5 @@ yt-dlp
 fpdf2
 transformers==4.44.2
 torch
-tokenizers==0.19.1
 sentencepiece
 accelerate
