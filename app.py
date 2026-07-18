@@ -5,7 +5,7 @@ import os
 import yt_dlp
 import time
 from fpdf import FPDF
-from transformers import pipeline
+from transformers.pipelines import pipeline
 
 
 # ---------------- UI ----------------
@@ -131,7 +131,6 @@ def chunk_and_summarize(transcript, summarizer, chunk_size=1800, overlap=100):
         summarized_text : all chunk summaries joined (covers full video)
     """
 
-    # ── SHORT TRANSCRIPT: no chunking needed ──
     transcript = transcript.strip()
     word_count = len(transcript.split())
 
@@ -152,6 +151,7 @@ def chunk_and_summarize(transcript, summarizer, chunk_size=1800, overlap=100):
 
         return result[0]["summary_text"]
 
+    # ── SHORT TRANSCRIPT: no chunking needed ──
     if len(transcript) <= chunk_size:
         return summarize_text(
             transcript,
