@@ -5,7 +5,7 @@ import os
 import yt_dlp
 import time
 from fpdf import FPDF
-from transformers import pipeline
+from transformers.pipelines import pipeline
 
 
 # ---------------- UI ----------------
