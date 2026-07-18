@@ -105,9 +105,6 @@ def load_models():
     return whisper_model, summarizer
 
 
-whisper_model, summarizer = load_models()
-
-
 # ---------------- CHUNKED SUMMARIZATION ----------------
 
 def chunk_and_summarize(transcript, summarizer, chunk_size=1800, overlap=100):
@@ -279,6 +276,8 @@ if video_path:
             st.write(
                 "Transcribing using Whisper..."
             )
+
+            whisper_model, summarizer = load_models()
 
             result = whisper_model.transcribe(
                 "audio.mp3",
