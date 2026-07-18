@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: ai-video-note-extractor
+    runtime: docker
+    plan: free
+    repo: https://github.com/charanReddy8179/AI-Video-Note-Extractor.git
+    branch: main
+    healthCheckPath: /

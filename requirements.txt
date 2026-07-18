@@ -1,0 +1,8 @@
+streamlit==1.56.0
+moviepy==2.2.1
+openai-whisper==20250625
+yt-dlp==2026.3.17
+fpdf==1.7.2
+transformers==4.40.0
+torch==2.11.0
+sentencepiece==0.2.1

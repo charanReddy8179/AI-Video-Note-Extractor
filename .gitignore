@@ -1,0 +1,13 @@
+venv/
+venv311/
+__pycache__/
+*.pyc
+
+.streamlit/secrets.toml
+.env
+
+audio.mp3
+input_video.mp4
+notes.pdf
+test_notes_tmp.pdf
+youtube_video*.mp4
