@@ -1,392 +1,189 @@
-import streamlit as st
-from moviepy import VideoFileClip
-import whisper
 import os
-import yt_dlp
+import re
+import tempfile
 import time
+from pathlib import Path
+
+import streamlit as st
+import whisper
+import yt_dlp
 from fpdf import FPDF
-from transformers.pipelines import pipeline
+
+try:
+    from moviepy.editor import VideoFileClip
+except ImportError:
+    from moviepy import VideoFileClip
 
 
-# ---------------- UI ----------------
-
-st.title("🎥 AI Video Note Extractor")
-
-st.write(
-    "Upload a video or paste a YouTube link to generate notes and download them as PDF."
-)
-
-uploaded_file = st.file_uploader(
-    "Upload Video",
-    type=["mp4", "mov", "avi"]
-)
-
-youtube_link = st.text_input(
-    "Paste YouTube Video URL"
-)
-
-video_path = None
+st.set_page_config(page_title="AI Video Note Extractor", page_icon="V")
+OUTPUT_DIR = Path(tempfile.gettempdir()) / "ai_video_note_extractor"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ---------------- YOUTUBE DOWNLOAD ----------------
+def safe_pdf_text(text):
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def safe_filename(name):
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", name).strip("_") or "video"
+
+
+def save_uploaded_video(uploaded_file):
+    suffix = Path(uploaded_file.name).suffix or ".mp4"
+    filename = OUTPUT_DIR / f"{safe_filename(Path(uploaded_file.name).stem)}_{int(time.time())}{suffix}"
+    with open(filename, "wb") as output_file:
+        output_file.write(uploaded_file.getbuffer())
+    return str(filename)
+
 
 def download_youtube_video(url):
-
-    filename = f"youtube_video_{int(time.time())}.mp4"
-
-    ydl_opts = {
+    output_template = str(OUTPUT_DIR / f"youtube_{int(time.time())}.%(ext)s")
+    options = {
         "format": "best[ext=mp4]/best",
-        "outtmpl": filename
+        "outtmpl": output_template,
+        "quiet": True,
+        "noplaylist": True,
     }
+    with yt_dlp.YoutubeDL(options) as downloader:
+        info = downloader.extract_info(url, download=True)
+        downloaded_path = downloader.prepare_filename(info)
+    if not Path(downloaded_path).exists():
+        raise FileNotFoundError("The YouTube video was not downloaded.")
+    return downloaded_path
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-
-    return filename
-
-
-# ---------------- PDF GENERATION ----------------
-
-def create_pdf(transcript, notes, revision):
-
-    pdf = FPDF()
-    pdf.add_page()
-
-    pdf.set_font("Arial", size=12)
-
-    transcript = transcript.encode(
-        "latin-1",
-        "replace"
-    ).decode("latin-1")
-
-    pdf.cell(200, 10, "Video Notes", ln=True)
-
-    pdf.cell(200, 10, "Transcript", ln=True)
-
-    pdf.multi_cell(0, 10, transcript)
-
-    pdf.cell(200, 10, "Detailed Notes", ln=True)
-
-    for note in notes:
-
-        note = note.encode(
-            "latin-1",
-            "replace"
-        ).decode("latin-1")
-
-        pdf.multi_cell(0, 10, note)
-
-    pdf.cell(200, 10, "Quick Revision", ln=True)
-
-    for point in revision:
-
-        point = point.encode(
-            "latin-1",
-            "replace"
-        ).decode("latin-1")
-
-        pdf.multi_cell(0, 10, point)
-
-    pdf.output("notes.pdf")
-
-
-# ---------------- LOAD MODELS ----------------
 
 @st.cache_resource
-def load_models():
-
-    whisper_model = whisper.load_model("base")
-
-    summarizer = pipeline(
-        "summarization",
-        model="sshleifer/distilbart-cnn-12-6"
-    )
-
-    return whisper_model, summarizer
+def load_whisper_model():
+    return whisper.load_model("base")
 
 
-# ---------------- CHUNKED SUMMARIZATION ----------------
+def make_notes(transcript, maximum_notes=10):
+    """Build useful extractive notes without Transformers summarization pipelines."""
+    sentences = [
+        " ".join(sentence.split()).strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", transcript)
+    ]
+    sentences = [sentence for sentence in sentences if len(sentence.split()) >= 5]
 
-def chunk_and_summarize(transcript, summarizer, chunk_size=1800, overlap=100):
-    """
-    Splits a long transcript into overlapping chunks,
-    summarizes each chunk separately, then returns
-    ALL chunk summaries joined together.
+    if not sentences:
+        return ["- No clear spoken sentences were detected in this video."]
 
-    KEY FIX: We do NOT do a final truncation pass.
-    Instead, we return all chunk summaries joined so
-    that EVERY part of the video appears in the notes.
+    stop_words = {
+        "about", "after", "again", "also", "because", "being", "between", "could",
+        "every", "from", "have", "into", "just", "more", "most", "only", "other",
+        "over", "really", "should", "some", "than", "that", "their", "there", "these",
+        "they", "this", "through", "under", "very", "what", "when", "which", "while",
+        "with", "would", "your",
+    }
+    counts = {}
+    for word in re.findall(r"[a-zA-Z]{3,}", transcript.lower()):
+        if word not in stop_words:
+            counts[word] = counts.get(word, 0) + 1
 
-    Args:
-        transcript  : full text string (any length)
-        summarizer  : loaded HuggingFace pipeline
-        chunk_size  : max characters per chunk (safe limit for DistilBART)
-        overlap     : characters shared between consecutive chunks
-                      (preserves sentence context at boundaries)
+    scored = []
+    for index, sentence in enumerate(sentences):
+        words = re.findall(r"[a-zA-Z]{3,}", sentence.lower())
+        if len(words) > 45:
+            continue
+        score = sum(counts.get(word, 0) for word in words) / max(len(words), 1)
+        scored.append((score, index, sentence))
 
-    Returns:
-        summarized_text : all chunk summaries joined (covers full video)
-    """
-
-    transcript = transcript.strip()
-    word_count = len(transcript.split())
-
-    if word_count < 25:
-        return transcript
-
-    def summarize_text(text, default_max_length, default_min_length):
-        words = len(text.split())
-        max_length = min(default_max_length, max(10, words - 1))
-        min_length = min(default_min_length, max(5, max_length // 2))
-
-        result = summarizer(
-            text,
-            max_length=max_length,
-            min_length=min_length,
-            do_sample=False
-        )
-
-        return result[0]["summary_text"]
-
-    # ── SHORT TRANSCRIPT: no chunking needed ──
-    if len(transcript) <= chunk_size:
-        return summarize_text(
-            transcript,
-            default_max_length=150,
-            default_min_length=50
-        )
-
-    # ── LONG TRANSCRIPT: split into chunks ──
-
-    # STEP 1 — Build chunks with overlap
-    chunks = []
-    start = 0
-
-    while start < len(transcript):
-        end = start + chunk_size
-        chunk = transcript[start:end]
-        chunks.append(chunk)
-        # Move forward by chunk_size MINUS overlap
-        # so next chunk starts slightly before this one ended
-        # This prevents sentences from being cut at boundaries
-        start += (chunk_size - overlap)
-
-    total_chunks = len(chunks)
-
-    st.write(f"📄 Long transcript detected — {len(transcript)} characters")
-    st.write(f"🔀 Splitting into {total_chunks} parts for complete summarization...")
-
-    # STEP 2 — Summarize each chunk individually
-    chunk_summaries = []
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    for i, chunk in enumerate(chunks):
-
-        status_text.write(
-            f"⏳ Summarizing part {i + 1} of {total_chunks}..."
-        )
-
-        summary = summarize_text(
-            chunk,
-            default_max_length=120,
-            default_min_length=30
-        )
-
-        chunk_summaries.append(summary)
-
-        # Update progress bar (value must be between 0.0 and 1.0)
-        progress_bar.progress((i + 1) / total_chunks)
-
-    progress_bar.empty()
-    status_text.empty()
-
-    # STEP 3 — Join ALL chunk summaries with a period separator
-    # No truncation here — every chunk's summary is kept
-    # This ensures the full video is represented in the notes
-    combined_summary = ". ".join(chunk_summaries)
-
-    return combined_summary
+    selected = sorted(scored, reverse=True)[:maximum_notes]
+    selected.sort(key=lambda item: item[1])
+    return [f"- {sentence}" for _, _, sentence in selected]
 
 
-# ---------------- HANDLE INPUT ----------------
+def create_pdf(transcript, notes, output_path):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "Video Notes", ln=True)
+    pdf.ln(3)
 
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 8, "Key Notes", ln=True)
+    pdf.set_font("Arial", size=11)
+    for note in notes:
+        pdf.multi_cell(0, 7, safe_pdf_text(note))
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 8, "Full Transcript", ln=True)
+    pdf.set_font("Arial", size=10)
+    pdf.multi_cell(0, 6, safe_pdf_text(transcript))
+    pdf.output(output_path)
+
+
+st.title("AI Video Note Extractor")
+st.write("Upload a video or paste a YouTube link to generate notes and download them as a PDF.")
+
+uploaded_file = st.file_uploader("Upload Video", type=["mp4", "mov", "avi", "mkv", "mpeg"])
+youtube_url = st.text_input("Paste YouTube Video URL")
+
+try:
+    whisper_model = load_whisper_model()
+except Exception as error:
+    st.error(f"Whisper model loading failed: {error}")
+    st.stop()
+
+video_path = None
 if uploaded_file is not None:
-
-    with open("input_video.mp4", "wb") as f:
-        f.write(uploaded_file.read())
-
-    video_path = "input_video.mp4"
-
-    st.success("Video uploaded successfully")
-
-elif youtube_link:
-
-    st.write("Downloading YouTube video...")
-
     try:
-
-        video_path = download_youtube_video(
-            youtube_link
-        )
-
-        st.success(
-            "YouTube video downloaded successfully"
-        )
-
-    except Exception as e:
-
-        st.error(
-            f"YouTube download failed: {e}"
-        )
-
-
-# ---------------- PROCESS VIDEO ----------------
+        video_path = save_uploaded_video(uploaded_file)
+        st.success("Video uploaded successfully.")
+    except Exception as error:
+        st.error(f"Could not save the uploaded video: {error}")
+        st.stop()
+elif youtube_url.strip():
+    try:
+        with st.spinner("Downloading YouTube video..."):
+            video_path = download_youtube_video(youtube_url.strip())
+        st.success("YouTube video downloaded successfully.")
+    except Exception as error:
+        st.error(f"YouTube download failed: {error}")
+        st.stop()
 
 if video_path:
+    audio_path = str(OUTPUT_DIR / f"audio_{int(time.time())}.mp3")
+    pdf_path = str(OUTPUT_DIR / f"video_notes_{int(time.time())}.pdf")
 
     try:
+        with st.spinner("Extracting audio from video..."):
+            with VideoFileClip(video_path) as video:
+                if video.audio is None:
+                    st.error("This video has no audio track.")
+                    st.stop()
+                video.audio.write_audiofile(audio_path, logger=None)
 
-        st.write(
-            f"Processing: {video_path}"
-        )
+        with st.spinner("Transcribing the audio with Whisper..."):
+            transcription = whisper_model.transcribe(audio_path, fp16=False)
+        transcript = transcription.get("text", "").strip()
 
-        video = VideoFileClip(video_path)
+        if not transcript:
+            st.error("No speech was detected in the video.")
+            st.stop()
 
-        if video.audio is None:
+        notes = make_notes(transcript)
+        create_pdf(transcript, notes, pdf_path)
 
-            st.error(
-                "Video does not contain audio"
+        st.success("Notes generated successfully.")
+        st.subheader("Key Notes")
+        for note in notes:
+            st.write(note)
+
+        st.subheader("Transcript Preview")
+        st.write(transcript[:1500])
+
+        with open(pdf_path, "rb") as pdf_file:
+            st.download_button(
+                label="Download PDF",
+                data=pdf_file.read(),
+                file_name="video_notes.pdf",
+                mime="application/pdf",
             )
-
-        else:
-
-            if os.path.exists("audio.mp3"):
-                os.remove("audio.mp3")
-
-            video.audio.write_audiofile(
-                "audio.mp3"
-            )
-
-            st.success(
-                "Audio extracted successfully"
-            )
-
-            st.write(
-                "Transcribing using Whisper..."
-            )
-
-            whisper_model, summarizer = load_models()
-
-            result = whisper_model.transcribe(
-                "audio.mp3",
-                fp16=False
-            )
-
-            transcript = result["text"]
-
-            if len(transcript.strip()) == 0:
-
-                st.error(
-                    "Transcript is empty"
-                )
-
-            else:
-
-                st.success(
-                    "Transcription completed"
-                )
-
-                st.write(
-                    "### Transcript Preview"
-                )
-
-                st.write(
-                    transcript[:500]
-                )
-
-                st.write(
-                    f"Transcript Length: {len(transcript)} characters"
-                )
-
-                # ── CHUNKED SUMMARIZATION (handles any length) ──
-                st.write("Generating AI Notes...")
-
-                summarized_text = chunk_and_summarize(
-                    transcript,
-                    summarizer
-                )
-
-                # ---------------- NOTES ----------------
-
-                sentences = summarized_text.replace(
-                    "\n",
-                    "."
-                ).split(".")
-
-                notes_list = []
-
-                for sentence in sentences:
-
-                    sentence = sentence.strip()
-
-                    if len(sentence) > 15:
-
-                        notes_list.append(
-                            "- " + sentence
-                        )
-
-                if len(notes_list) == 0:
-
-                    notes_list.append(
-                        "- Summary generation completed."
-                    )
-
-                st.success(
-                    "Notes generated successfully"
-                )
-
-                st.write(
-                    "### Detailed Notes"
-                )
-
-                for note in notes_list:
-
-                    st.write(note)
-
-                revision_points = notes_list[:6]
-
-                st.write(
-                    "### Quick Revision"
-                )
-
-                for point in revision_points:
-
-                    st.write(point)
-
-                # ---------------- PDF ----------------
-
-                create_pdf(
-                    transcript,
-                    notes_list,
-                    revision_points
-                )
-
-                with open(
-                    "notes.pdf",
-                    "rb"
-                ) as file:
-
-                    st.download_button(
-                        label="📥 Download PDF",
-                        data=file,
-                        file_name="video_notes.pdf",
-                        mime="application/pdf"
-                    )
-
-    except Exception as e:
-
-        st.error(
-            f"Processing failed: {e}"
-        )
+    except Exception as error:
+        st.error(f"Video processing failed: {error}")
+    finally:
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
