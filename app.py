@@ -107,11 +107,11 @@ def create_pdf(transcript, notes, revision):
 @st.cache_resource
 def load_models():
 
-    whisper_model = whisper.load_model("base")
+    whisper_model = whisper.load_model("tiny")  # 'tiny' uses ~70MB RAM vs 500MB for 'base'
 
     summarizer = pipeline(
         "summarization",
-        model="sshleifer/distilbart-cnn-12-6"
+        model="sshleifer/distilbart-cnn-6-6"  # '6-6' uses half the RAM of '12-6'
     )
 
     return whisper_model, summarizer
